@@ -1,0 +1,6 @@
+mlflow/
+venv/
+__pycache__/
+*.joblib
+*.pkl
+*.model
