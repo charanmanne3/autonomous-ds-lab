@@ -84,5 +84,6 @@ class ReportAgent:
             "best_model_name": best_model_info["model_name"],
             "best_score": best_model_info["metrics"]["rmse"],
             "best_model_metrics": best_model_info["metrics"],
+            "model_comparison": model_comparison,
         }
 

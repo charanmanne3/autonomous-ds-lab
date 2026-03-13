@@ -13,9 +13,21 @@ import streamlit as st
 
 
 API_URL = "http://127.0.0.1:8000/run-pipeline"
+STATUS_URL = "http://127.0.0.1:8000/pipeline-status"
+PLAN_URL = "http://127.0.0.1:8000/plan-task"
+MEMORY_SIMILAR_URL = "http://127.0.0.1:8000/memory/similar"
+MEMORY_HISTORY_URL = "http://127.0.0.1:8000/memory/history"
 MLFLOW_UI_URL = "http://127.0.0.1:5000"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UI_PIPELINE_TIMEOUT_SECONDS = 90
+STEP_LABELS = {
+    "dataset_ingestion": "Dataset Ingestion",
+    "data_cleaning": "Data Cleaning",
+    "feature_engineering": "Feature Engineering",
+    "model_training": "Model Training",
+    "model_evaluation": "Model Evaluation",
+    "report_generation": "Report Generation",
+}
 
 
 def _inject_styles() -> None:
@@ -41,15 +53,94 @@ def _inject_styles() -> None:
     )
 
 
-def _call_pipeline(task: str, fast_demo_mode: bool) -> Dict[str, Any]:
+def _call_pipeline(
+    task: str,
+    fast_demo_mode: bool,
+    dataset_csv: str | None,
+    target_column: str | None,
+    task_type: str,
+) -> Dict[str, Any]:
     """Send pipeline request to FastAPI backend and return JSON payload."""
     response = requests.post(
         API_URL,
-        json={"task": task, "fast_demo_mode": fast_demo_mode},
+        json={
+            "task": task,
+            "fast_demo_mode": fast_demo_mode,
+            "dataset_csv": dataset_csv,
+            "target_column": target_column,
+            "task_type": task_type,
+        },
         timeout=300,
     )
     response.raise_for_status()
     return response.json()
+
+
+def _get_pipeline_status() -> Dict[str, Any]:
+    """Fetch real-time pipeline step status from backend."""
+    try:
+        response = requests.get(STATUS_URL, timeout=3)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return {
+            "running": False,
+            "current_step": 0,
+            "total_steps": 6,
+            "message": "Status unavailable",
+            "status": "unknown",
+            "pipeline_plan": [],
+        }
+
+
+def _get_pipeline_plan(task: str, task_type: str | None, target: str | None) -> Dict[str, Any]:
+    """Fetch planner-generated pipeline plan from backend."""
+    try:
+        response = requests.get(
+            PLAN_URL,
+            params={"task": task, "task_type": task_type, "target": target},
+            timeout=5,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return {
+            "task": task,
+            "task_type": (task_type or "regression").lower(),
+            "target": target or "target",
+            "pipeline_steps": [
+                "dataset_ingestion",
+                "data_cleaning",
+                "feature_engineering",
+                "model_training",
+                "model_evaluation",
+                "report_generation",
+            ],
+        }
+
+
+def _get_memory_preview(task: str) -> Dict[str, Any]:
+    """Fetch similar experiments and recommendations for a given task."""
+    try:
+        response = requests.get(MEMORY_SIMILAR_URL, params={"task": task, "limit": 3}, timeout=5)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return {
+            "similar_experiments": [],
+            "recommended_models": [],
+            "ai_insight": "Memory service unavailable.",
+        }
+
+
+def _get_experiment_history(limit: int = 20) -> list[dict]:
+    """Fetch experiment history table from backend memory."""
+    try:
+        response = requests.get(MEMORY_HISTORY_URL, params={"limit": limit}, timeout=5)
+        response.raise_for_status()
+        return response.json().get("experiment_history", [])
+    except requests.RequestException:
+        return []
 
 
 def _check_backend_health() -> str:
@@ -63,10 +154,23 @@ def _check_backend_health() -> str:
     return "Offline"
 
 
-def _run_pipeline_background(task: str, fast_demo_mode: bool, output: Dict[str, Any]) -> None:
+def _run_pipeline_background(
+    task: str,
+    fast_demo_mode: bool,
+    dataset_csv: str | None,
+    target_column: str | None,
+    task_type: str,
+    output: Dict[str, Any],
+) -> None:
     """Execute pipeline in worker thread and write to a plain dict."""
     try:
-        output["payload"] = _call_pipeline(task, fast_demo_mode)
+        output["payload"] = _call_pipeline(
+            task=task,
+            fast_demo_mode=fast_demo_mode,
+            dataset_csv=dataset_csv,
+            target_column=target_column,
+            task_type=task_type,
+        )
         output["fast_demo_mode"] = fast_demo_mode
     except requests.RequestException as exc:
         output["error"] = str(exc)
@@ -169,6 +273,93 @@ def _parse_leaderboard(report_path: str, best_model_name: str) -> pd.DataFrame:
         lambda name: "🏆 Best" if name == normalized_best else ""
     )
     return leaderboard
+
+
+def _build_comparison_df(model_comparison: list[dict], best_model_name: str) -> pd.DataFrame:
+    """Create normalized model comparison dataframe from API payload."""
+    if not model_comparison:
+        return _parse_leaderboard("reports/model_report.md", best_model_name)
+
+    rows = []
+    for row in model_comparison:
+        rows.append(
+            {
+                "Model": _normalize_model_name(row.get("model", "")),
+                "RMSE": row.get("rmse"),
+                "MAE": row.get("mae"),
+                "R2": row.get("r2"),
+            }
+        )
+    df = pd.DataFrame(rows)
+    df["Best"] = df["Model"].apply(
+        lambda name: "🏆 Best" if name == _normalize_model_name(best_model_name) else ""
+    )
+    return df
+
+
+def _render_pipeline_plan(plan_steps: list[str]) -> None:
+    """Render numbered pipeline plan for transparency."""
+    st.markdown("### 🧠 Pipeline Plan")
+    for idx, step in enumerate(plan_steps, start=1):
+        st.markdown(f"{idx}. {STEP_LABELS.get(step, step.replace('_', ' ').title())}")
+
+
+def _render_memory_sections(
+    recommended_models: list[str],
+    ai_insight: str,
+    experiment_history: list[dict],
+) -> None:
+    """Render recommendations, AI insight, and experiment history UI."""
+    st.markdown("### 🤖 Model Recommendation System")
+    if recommended_models:
+        st.markdown(
+            "\n".join([f"- `{_normalize_model_name(model)}`" for model in recommended_models])
+        )
+    else:
+        st.caption("No recommendations yet. Run more experiments to build memory.")
+
+    st.markdown("### 💡 AI Insights")
+    st.info(ai_insight)
+
+    st.markdown("### 🗂️ Experiment History")
+    if experiment_history:
+        history_df = pd.DataFrame(experiment_history)
+        keep_cols = ["task", "best_model", "rmse", "r2", "timestamp"]
+        history_df = history_df[[col for col in keep_cols if col in history_df.columns]].copy()
+        history_df = history_df.rename(
+            columns={
+                "task": "Task",
+                "best_model": "Best Model",
+                "rmse": "RMSE",
+                "r2": "R2",
+                "timestamp": "Date",
+            }
+        )
+        st.dataframe(history_df, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No experiment history yet.")
+
+
+def _render_workflow_diagram(plan_steps: list[str], current_step: int) -> None:
+    """Render lightweight workflow diagram with active step highlighting."""
+    st.markdown("### 🔄 Pipeline Workflow")
+    chips = []
+    for idx, step in enumerate(plan_steps, start=1):
+        label = STEP_LABELS.get(step, step.replace("_", " ").title())
+        if idx < current_step:
+            color = "#16a34a"
+            icon = "✓"
+        elif idx == current_step:
+            color = "#ea580c"
+            icon = "▶"
+        else:
+            color = "#334155"
+            icon = "•"
+        chips.append(
+            f"<span style='background:{color};color:white;padding:6px 10px;border-radius:8px;'>"
+            f"{icon} {label}</span>"
+        )
+    st.markdown(" ➜ ".join(chips), unsafe_allow_html=True)
 
 
 def _render_feature_importance(best_model_name: str) -> None:
@@ -279,6 +470,40 @@ def main() -> None:
     with left:
         st.markdown("### 🎯 Pipeline Task")
         task = st.text_input("Enter ML task", value="Predict house prices")
+        task_type_override = st.selectbox(
+            "Task Type Override",
+            options=["Auto", "Regression", "Classification"],
+            index=0,
+            help="Auto uses the AI Task Planner keyword inference.",
+        )
+        uploaded_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
+        uploaded_target_col = None
+        uploaded_dataset_csv = None
+        if uploaded_file is not None:
+            uploaded_preview = pd.read_csv(uploaded_file)
+            uploaded_file.seek(0)
+            uploaded_dataset_csv = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            uploaded_target_col = st.selectbox(
+                "Select Target Column",
+                options=list(uploaded_preview.columns),
+            )
+            st.caption(f"Uploaded rows: {len(uploaded_preview)} | columns: {len(uploaded_preview.columns)}")
+
+        planner_task_type = None if task_type_override == "Auto" else task_type_override
+        plan_preview = _get_pipeline_plan(task, planner_task_type, uploaded_target_col)
+        memory_preview = _get_memory_preview(task)
+        history_preview = _get_experiment_history(limit=10)
+        _render_pipeline_plan(plan_preview.get("pipeline_steps", []))
+        st.caption(
+            f"Planner inferred task type: **{plan_preview.get('task_type', 'regression')}** | "
+            f"target hint: **{plan_preview.get('target', 'target')}**"
+        )
+        _render_memory_sections(
+            recommended_models=memory_preview.get("recommended_models", []),
+            ai_insight=memory_preview.get("ai_insight", "No insights available yet."),
+            experiment_history=history_preview,
+        )
+
         fast_demo_mode = st.toggle(
             "Fast Demo Mode",
             value=True,
@@ -321,6 +546,8 @@ def main() -> None:
     if run_clicked:
         if not task.strip():
             st.warning("Please enter a valid task before running the pipeline.")
+        elif uploaded_file is not None and not uploaded_target_col:
+            st.warning("Please select a target column for the uploaded CSV.")
         elif st.session_state.get("pipeline_running"):
             st.info("Pipeline is already running. Please wait for completion.")
         else:
@@ -330,7 +557,14 @@ def main() -> None:
             st.session_state["pipeline_output"] = {}
             worker = threading.Thread(
                 target=_run_pipeline_background,
-                args=(task.strip(), fast_demo_mode, st.session_state["pipeline_output"]),
+                args=(
+                    task.strip(),
+                    fast_demo_mode,
+                    uploaded_dataset_csv,
+                    uploaded_target_col,
+                    planner_task_type or plan_preview.get("task_type", "regression"),
+                    st.session_state["pipeline_output"],
+                ),
                 daemon=True,
             )
             st.session_state["pipeline_worker"] = worker
@@ -340,6 +574,8 @@ def main() -> None:
         started_at = st.session_state.get("pipeline_started_at") or time.time()
         elapsed = int(time.time() - started_at)
         worker = st.session_state.get("pipeline_worker")
+        backend_progress = _get_pipeline_status()
+        plan_steps = backend_progress.get("pipeline_plan", plan_preview.get("pipeline_steps", []))
 
         # Client-side timeout safeguard to prevent permanent running UI state.
         if elapsed > UI_PIPELINE_TIMEOUT_SECONDS:
@@ -357,6 +593,12 @@ def main() -> None:
             _finalize_worker_if_done()
             st.rerun()
 
+        st.markdown("### 🚦 Pipeline Status")
+        progress_total = max(int(backend_progress.get("total_steps", 6)), 1)
+        progress_step = int(backend_progress.get("current_step", 0))
+        st.progress(min(progress_step / progress_total, 1.0))
+        st.caption(backend_progress.get("message", "Running pipeline..."))
+        _render_workflow_diagram(plan_steps, max(progress_step, 1))
         with st.spinner("Running AI pipeline..."):
             st.info(f"Pipeline is running in background. Elapsed time: {elapsed}s")
 
@@ -376,9 +618,15 @@ def main() -> None:
         return
 
     result = payload.get("result", {})
-    best_model_name = result.get("best_model_name", "N/A")
-    metrics = result.get("best_model_metrics", {})
-    report_path = result.get("report_path", "reports/model_report.md")
+    best_model_name = payload.get("best_model") or result.get("best_model_name", "N/A")
+    metrics = payload.get("metrics") or result.get("best_model_metrics", {})
+    report_path = payload.get("report_path") or result.get("report_path", "reports/model_report.md")
+    model_comparison = payload.get("model_comparison") or result.get("model_comparison", [])
+    recommended_models = payload.get("recommended_models", [])
+    ai_insight = payload.get("ai_insight", "No insights available yet.")
+    experiment_history = payload.get("experiment_history", [])
+    task_type_used = payload.get("task_type") or result.get("task_type", "regression")
+    plan_used = payload.get("pipeline_plan") or result.get("pipeline_plan", plan_preview.get("pipeline_steps", []))
     mode_label = (
         "Demo Fast"
         if st.session_state.get("last_fast_demo_mode", True)
@@ -395,6 +643,11 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+    st.caption(f"Task type used: **{task_type_used}**")
+    _render_workflow_diagram(plan_used, len(plan_used))
+
+    st.markdown("### 🏁 Best Model")
+    st.success(f"Best model selected: {_normalize_model_name(best_model_name)}")
 
     # Key metric cards.
     st.markdown("### 📊 Model Metrics")
@@ -418,9 +671,15 @@ def main() -> None:
     st.bar_chart(metric_df)
 
     # Leaderboard section with best-model highlighting.
-    st.markdown("### 🏆 Model Leaderboard")
-    leaderboard_df = _parse_leaderboard(report_path, best_model_name)
+    st.markdown("### 🏆 Model Comparison")
+    leaderboard_df = _build_comparison_df(model_comparison, best_model_name)
     st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)
+
+    # Model-wise RMSE comparison chart for quick performance scan.
+    rmse_chart_df = leaderboard_df[["Model", "RMSE"]].dropna()
+    if not rmse_chart_df.empty:
+        rmse_chart_df = rmse_chart_df.set_index("Model")
+        st.bar_chart(rmse_chart_df)
 
     # Feature importance for tree-based best models.
     st.markdown("### 🔍 Feature Importance")
@@ -429,6 +688,12 @@ def main() -> None:
     # Experiment history quick access.
     st.markdown("### 🧪 Experiment History (MLflow)")
     st.link_button("View full experiment history", MLFLOW_UI_URL)
+
+    _render_memory_sections(
+        recommended_models=recommended_models,
+        ai_insight=ai_insight,
+        experiment_history=experiment_history,
+    )
 
     # Report section with open button and markdown preview.
     _render_report_section(report_path)
