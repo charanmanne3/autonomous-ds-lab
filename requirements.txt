@@ -1,12 +1,13 @@
 pandas
 numpy
 scikit-learn
-xgboost
 mlflow
 fastapi
 uvicorn
 apache-airflow
 langchain
+langgraph
+langchain-openai
 python-multipart
 streamlit
 requests

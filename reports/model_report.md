@@ -21,16 +21,15 @@
 ## Model Comparison
 | Model | RMSE | MAE | R2 |
 |---|---:|---:|---:|
-| XGBoost | 55788.0789 | 38393.0971 | 0.7696 |
 | RandomForest | 68894.1520 | 49354.7643 | 0.6486 |
 | LinearRegression | 70803.1533 | 51741.6112 | 0.6288 |
 
 ## Best Model
-- Model: XGBoost
-- RMSE: 55788.0789
-- MAE: 38393.0971
-- R2: 0.7696
-- Model Path: /Users/charanmanne/Documents/Programming/autonomous-ds-lab/storage/models/xgboost.joblib
+- Model: RandomForest
+- RMSE: 68894.1520
+- MAE: 49354.7643
+- R2: 0.6486
+- Model Path: /Users/charanmanne/Documents/Programming/autonomous-ds-lab/storage/models/randomforest.joblib
 
 ## Recommendations
 - Tune hyperparameters of the best-performing model using cross-validation.

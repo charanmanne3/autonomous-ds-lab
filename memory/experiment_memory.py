@@ -102,7 +102,7 @@ class ExperimentMemory:
         similar = self.query_similar(task, limit=limit)
         models = [row.get("best_model", "") for row in similar if row.get("best_model")]
         if not models:
-            return ["XGBoost", "RandomForest", "LinearRegression"]
+            return ["RandomForest", "LinearRegression"]
         ranked = Counter(models).most_common()
         return [name for name, _ in ranked]
 
@@ -113,6 +113,6 @@ class ExperimentMemory:
             return "No prior experiments found. Run the pipeline to build memory."
         top = similar[0]
         return (
-            f"Based on previous experiments for similar tasks, {top.get('best_model', 'XGBoost')} "
+            f"Based on previous experiments for similar tasks, {top.get('best_model', 'RandomForest')} "
             f"performed best with R2={float(top.get('r2', 0.0)):.3f}."
         )

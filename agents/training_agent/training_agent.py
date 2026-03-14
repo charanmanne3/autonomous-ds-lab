@@ -15,7 +15,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from xgboost import XGBRegressor
 
 
 class TrainingAgent:
@@ -109,30 +108,12 @@ class TrainingAgent:
                     random_state=42,
                     n_jobs=-1,
                 ),
-                "XGBoost": XGBRegressor(
-                    objective="reg:squarederror",
-                    n_estimators=50,
-                    learning_rate=0.1,
-                    max_depth=4,
-                    subsample=0.8,
-                    random_state=42,
-                    n_jobs=-1,
-                ),
             }
         else:
             models = {
                 "LinearRegression": LinearRegression(),
                 "RandomForest": RandomForestRegressor(
                     n_estimators=250,
-                    random_state=42,
-                    n_jobs=-1,
-                ),
-                "XGBoost": XGBRegressor(
-                    objective="reg:squarederror",
-                    n_estimators=250,
-                    learning_rate=0.05,
-                    max_depth=6,
-                    subsample=0.8,
                     random_state=42,
                     n_jobs=-1,
                 ),

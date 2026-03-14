@@ -41,7 +41,7 @@ def run(self, input_data):
 - **DatasetAgent**: loads California Housing dataset from `sklearn`
 - **CleaningAgent**: handles missing values, encoding, and scaling
 - **FeatureAgent**: creates domain-inspired features automatically
-- **TrainingAgent**: trains Linear Regression, Random Forest, and XGBoost with MLflow tracking
+- **TrainingAgent**: trains Linear Regression and Random Forest with MLflow tracking
 - **EvaluationAgent**: computes RMSE, MAE, and R2; selects best model
 - **ReportAgent**: writes report to `reports/model_report.md`
 

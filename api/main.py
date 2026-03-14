@@ -1,18 +1,24 @@
 import logging
+import json
+import queue
 import threading
 import time
 from datetime import datetime
 from typing import Any, Dict
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from graph.agent_graph import run_chat_workflow, run_chat_workflow_with_progress
 from memory import ExperimentMemory
+from memory.vector_store import ChatVectorStore
 from orchestrator.task_planner import TaskPlanner
 
 app = FastAPI(title="Autonomous Data Science Lab API", version="1.0.0")
 planner = TaskPlanner()
 experiment_memory = ExperimentMemory()
+chat_memory = ChatVectorStore()
 logger = logging.getLogger("api.main")
 
 PIPELINE_TIMEOUT_SECONDS = 60
@@ -48,6 +54,10 @@ class PipelineRequest(BaseModel):
     )
 
 
+class ChatRequest(BaseModel):
+    message: str = Field(..., description="User chat message")
+
+
 @app.get("/health")
 def health_check():
     return {
@@ -81,6 +91,112 @@ def memory_similar(task: str, limit: int = 3):
 @app.get("/memory/history")
 def memory_history(limit: int = 20):
     return {"experiment_history": experiment_memory.get_history(limit=limit)}
+
+
+@app.post("/chat")
+def chat(payload: ChatRequest):
+    """LangGraph-powered multi-agent chatbot endpoint."""
+    message = payload.message.strip()
+    if not message:
+        return {"status": "failed", "error": "Message cannot be empty."}
+
+    similar_records = chat_memory.query_similar(message, limit=3)
+    similar_context = "\n".join(
+        [f"Q: {row.get('question', '')}\nA: {row.get('response', '')}" for row in similar_records]
+    )
+    graph_output = run_chat_workflow(message=message, similar_context=similar_context)
+    response_text = graph_output.get("final_response", "I could not generate a response.")
+    chat_memory.add_message(question=message, response=response_text)
+    return {
+        "status": "completed",
+        "message": message,
+        "response": response_text,
+        "similar_history": similar_records,
+    }
+
+
+@app.post("/chat/stream")
+def chat_stream(payload: ChatRequest):
+    """Stream chatbot response with per-agent status updates."""
+    message = payload.message.strip()
+    if not message:
+        error_payload = {"type": "error", "content": "Message cannot be empty."}
+        return StreamingResponse(
+            iter([json.dumps(error_payload) + "\n"]),
+            media_type="application/x-ndjson",
+        )
+
+    def _generate():
+        similar_records = chat_memory.query_similar(message, limit=3)
+        similar_context = "\n".join(
+            [f"Q: {row.get('question', '')}\nA: {row.get('response', '')}" for row in similar_records]
+        )
+        yield json.dumps(
+            {
+                "type": "status",
+                "content": (
+                    "Agents running: Research Agent -> Analysis Agent -> "
+                    "Code Agent -> Visualization Agent -> Report Agent"
+                ),
+            }
+        ) + "\n"
+
+        progress_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
+        done_flag = {"done": False}
+
+        def _progress_cb(agent_name: str) -> None:
+            progress_queue.put({"type": "status", "content": f"Running {agent_name}..."})
+
+        def _worker() -> None:
+            try:
+                result = run_chat_workflow_with_progress(
+                    message=message,
+                    similar_context=similar_context,
+                    progress_callback=_progress_cb,
+                )
+                response_text = result.get("final_response", "I could not generate a response.")
+                progress_queue.put(
+                    {
+                        "type": "final",
+                        "content": response_text,
+                        "similar_history": similar_records,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                progress_queue.put({"type": "error", "content": f"Chat workflow failed: {exc}"})
+            finally:
+                done_flag["done"] = True
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+
+        while not done_flag["done"] or not progress_queue.empty():
+            try:
+                item = progress_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if item.get("type") == "status":
+                yield json.dumps(item) + "\n"
+                continue
+
+            if item.get("type") == "error":
+                yield json.dumps(item) + "\n"
+                yield json.dumps({"type": "done"}) + "\n"
+                return
+
+            if item.get("type") == "final":
+                final_text = str(item.get("content", ""))
+                # Stream response incrementally for a ChatGPT-like typing effect.
+                for word in final_text.split(" "):
+                    yield json.dumps({"type": "token", "content": word + " "}) + "\n"
+                    time.sleep(0.01)
+
+                chat_memory.add_message(question=message, response=final_text)
+                yield json.dumps({"type": "done", "similar_history": item.get("similar_history", [])}) + "\n"
+                return
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
 def _execute_pipeline(

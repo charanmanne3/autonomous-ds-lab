@@ -1,5 +1,6 @@
 """Modern Streamlit dashboard for Autonomous Data Science Lab."""
 
+import json
 from pathlib import Path
 import threading
 import time
@@ -13,6 +14,8 @@ import streamlit as st
 
 
 API_URL = "http://127.0.0.1:8000/run-pipeline"
+CHAT_URL = "http://127.0.0.1:8000/chat"
+CHAT_STREAM_URL = "http://127.0.0.1:8000/chat/stream"
 STATUS_URL = "http://127.0.0.1:8000/pipeline-status"
 PLAN_URL = "http://127.0.0.1:8000/plan-task"
 MEMORY_SIMILAR_URL = "http://127.0.0.1:8000/memory/similar"
@@ -91,6 +94,31 @@ def _get_pipeline_status() -> Dict[str, Any]:
             "status": "unknown",
             "pipeline_plan": [],
         }
+
+
+def _chat_with_backend(message: str) -> Dict[str, Any]:
+    """Send chat message to backend LangGraph workflow."""
+    response = requests.post(CHAT_URL, json={"message": message}, timeout=180)
+    response.raise_for_status()
+    return response.json()
+
+
+def _stream_chat_with_backend(message: str):
+    """Stream NDJSON events from backend chat endpoint."""
+    with requests.post(
+        CHAT_STREAM_URL,
+        json={"message": message},
+        timeout=300,
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
 
 def _get_pipeline_plan(task: str, task_type: str | None, target: str | None) -> Dict[str, Any]:
@@ -211,7 +239,6 @@ def _normalize_model_name(model_name: str) -> str:
     mapping = {
         "LinearRegression": "Linear Regression",
         "RandomForest": "Random Forest",
-        "XGBoost": "XGBoost",
     }
     return mapping.get(model_name, model_name)
 
@@ -223,7 +250,6 @@ def _model_file_for_name(model_name: str) -> Path:
         "Linear Regression": "linearregression.joblib",
         "RandomForest": "randomforest.joblib",
         "Random Forest": "randomforest.joblib",
-        "XGBoost": "xgboost.joblib",
     }
     filename = filename_map.get(model_name, f"{model_name.lower().replace(' ', '')}.joblib")
     return PROJECT_ROOT / "storage" / "models" / filename
@@ -265,7 +291,6 @@ def _parse_leaderboard(report_path: str, best_model_name: str) -> pd.DataFrame:
         rows = [
             {"Model": "Linear Regression", "RMSE": None, "MAE": None, "R2": None},
             {"Model": "Random Forest", "RMSE": None, "MAE": None, "R2": None},
-            {"Model": "XGBoost", "RMSE": None, "MAE": None, "R2": None},
         ]
 
     leaderboard = pd.DataFrame(rows)
@@ -340,6 +365,74 @@ def _render_memory_sections(
         st.caption("No experiment history yet.")
 
 
+def _render_chatbot_interface() -> None:
+    """Render ChatGPT-style interface backed by /chat endpoint."""
+    st.markdown("### 🤖 LLM Multi-Agent Chatbot")
+    st.caption(
+        "Powered by LangChain + LangGraph agents: Research -> Analysis -> Code -> Visualization -> Report."
+    )
+
+    st.session_state.setdefault("messages", [])
+    if not st.session_state["messages"]:
+        st.session_state["messages"].append(
+            {
+                "role": "assistant",
+                "content": (
+                    "I am your Autonomous DS Lab assistant. Ask me to analyze datasets, suggest models, "
+                    "or generate ML implementation plans."
+                ),
+            }
+        )
+
+    for message in st.session_state["messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    user_prompt = st.chat_input("Ask a data science or ML engineering question...")
+    if not user_prompt:
+        return
+
+    st.session_state["messages"].append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+
+    with st.chat_message("assistant"):
+        progress_placeholder = st.empty()
+        response_placeholder = st.empty()
+        assistant_text = ""
+        similar_history = []
+
+        try:
+            for event in _stream_chat_with_backend(user_prompt):
+                event_type = event.get("type")
+                if event_type == "status":
+                    progress_placeholder.info(event.get("content", "Running agents..."))
+                elif event_type == "token":
+                    assistant_text += event.get("content", "")
+                    response_placeholder.markdown(assistant_text)
+                elif event_type == "done":
+                    similar_history = event.get("similar_history", [])
+                    break
+                elif event_type == "error":
+                    assistant_text = event.get("content", "Unknown error")
+                    response_placeholder.error(assistant_text)
+                    break
+        except requests.RequestException as exc:
+            assistant_text = f"Chat backend error: {exc}"
+            response_placeholder.error(assistant_text)
+
+        if not assistant_text:
+            assistant_text = "No response generated."
+            response_placeholder.markdown(assistant_text)
+
+        if similar_history:
+            with st.expander("Retrieved similar memory"):
+                for item in similar_history:
+                    st.markdown(f"- **Q:** {item.get('question', '')}")
+                    st.markdown(f"  **A:** {item.get('response', '')[:250]}...")
+    st.session_state["messages"].append({"role": "assistant", "content": assistant_text})
+
+
 def _render_workflow_diagram(plan_steps: list[str], current_step: int) -> None:
     """Render lightweight workflow diagram with active step highlighting."""
     st.markdown("### 🔄 Pipeline Workflow")
@@ -365,8 +458,8 @@ def _render_workflow_diagram(plan_steps: list[str], current_step: int) -> None:
 def _render_feature_importance(best_model_name: str) -> None:
     """Render feature importance chart for tree-based models."""
     normalized_best = _normalize_model_name(best_model_name)
-    if normalized_best not in {"Random Forest", "XGBoost"}:
-        st.info("Feature importance is available for Random Forest and XGBoost models.")
+    if normalized_best not in {"Random Forest"}:
+        st.info("Feature importance is available for Random Forest model.")
         return
 
     model_path = _model_file_for_name(normalized_best)
@@ -453,6 +546,15 @@ def main() -> None:
         "An AI analytics platform that orchestrates dataset ingestion, cleaning, feature engineering, "
         "model training, evaluation, and reporting."
     )
+    app_mode = st.radio(
+        "Mode",
+        options=["LLM Chatbot", "Pipeline Lab"],
+        horizontal=True,
+        index=0,
+    )
+    if app_mode == "LLM Chatbot":
+        _render_chatbot_interface()
+        return
 
     # Initialize runtime state for asynchronous pipeline execution.
     st.session_state.setdefault("pipeline_running", False)
