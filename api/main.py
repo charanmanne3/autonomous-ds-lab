@@ -4,7 +4,14 @@ import queue
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
+
+from dotenv import load_dotenv
+
+# Load .env from cwd and project root so OPENAI_API_KEY is found regardless of startup location
+load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -60,10 +67,14 @@ class ChatRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
+    from agents.chatbot.common import get_llm
+
+    llm = get_llm()
     return {
         "status": "ok",
         "pipeline_running": pipeline_running,
         "pipeline_progress": pipeline_progress,
+        "llm_available": llm is not None,
     }
 
 

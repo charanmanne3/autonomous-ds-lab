@@ -57,13 +57,29 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Start API
+### 2) Configure OpenAI API key (for LLM Chatbot)
+
+The LLM chatbot requires an OpenAI API key. Create a `.env` file in the project root:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and replace `sk-your-actual-key-here` with your real API key from [OpenAI API keys](https://platform.openai.com/api-keys).
+
+Alternatively, export the variable before starting:
+
+```bash
+export OPENAI_API_KEY=sk-your-actual-key
+```
+
+### 3) Start API
 
 ```bash
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 3) Trigger pipeline
+### 4) Trigger pipeline
 
 ```bash
 curl -X POST "http://localhost:8000/run-pipeline" \

@@ -1,10 +1,18 @@
 """Modern Streamlit dashboard for Autonomous Data Science Lab."""
 
+import os
 import json
 from pathlib import Path
 import threading
 import time
 from typing import Any, Dict
+
+from dotenv import load_dotenv
+
+# Load .env from cwd and project root so OPENAI_API_KEY is found regardless of startup location
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv()
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 import joblib
 import pandas as pd
@@ -21,7 +29,7 @@ PLAN_URL = "http://127.0.0.1:8000/plan-task"
 MEMORY_SIMILAR_URL = "http://127.0.0.1:8000/memory/similar"
 MEMORY_HISTORY_URL = "http://127.0.0.1:8000/memory/history"
 MLFLOW_UI_URL = "http://127.0.0.1:5000"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = _PROJECT_ROOT
 UI_PIPELINE_TIMEOUT_SECONDS = 90
 STEP_LABELS = {
     "dataset_ingestion": "Dataset Ingestion",
@@ -371,6 +379,18 @@ def _render_chatbot_interface() -> None:
     st.caption(
         "Powered by LangChain + LangGraph agents: Research -> Analysis -> Code -> Visualization -> Report."
     )
+
+    # Check backend's LLM availability (backend is what runs the chatbot)
+    try:
+        health = requests.get(f"{CHAT_STREAM_URL.replace('/chat/stream', '')}/health", timeout=3)
+        if health.status_code == 200:
+            llm_available = health.json().get("llm_available", False)
+        else:
+            llm_available = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    except requests.RequestException:
+        llm_available = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    if not llm_available:
+        st.warning("Set OPENAI_API_KEY for tailored recommendations.")
 
     st.session_state.setdefault("messages", [])
     if not st.session_state["messages"]:

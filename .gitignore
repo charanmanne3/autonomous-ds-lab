@@ -1,3 +1,4 @@
+.env
 mlflow/
 venv/
 __pycache__/

@@ -15,9 +15,11 @@ class ResearchAgent:
         prompt = f"""
 You are a research assistant for data/ML questions.
 User query: {query}
-Similar historical context: {similar_context}
 
-Provide concise research notes:
+Relevant previous conversation (for reference only—do NOT copy or repeat):
+{similar_context}
+
+Provide concise research notes. Use the previous conversation only as background context. Generate NEW notes tailored to this query:
 1) Core objective
 2) Relevant domain assumptions
 3) Key data points to investigate
